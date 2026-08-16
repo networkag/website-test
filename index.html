@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Test Contact Form</title>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onloadTurnstileCallback" async defer></script>
+<style>
+  /* Deliberately no design — just enough to keep the form usable */
+  body { font-family: sans-serif; max-width: 480px; margin: 40px auto; padding: 0 16px; }
+  label { display: block; margin-top: 12px; font-weight: bold; }
+  input[type="text"], input[type="email"], textarea {
+    width: 100%; box-sizing: border-box; padding: 6px; margin-top: 4px;
+  }
+  textarea { min-height: 100px; }
+  button { margin-top: 16px; padding: 8px 16px; }
+  #form-status { margin-top: 12px; }
+  #form-status.error { color: #b00020; }
+  #form-status.success { color: #0a7a2f; }
+  /* Honeypot field — hidden from sighted users AND screen readers,
+     but still present in the DOM so bots that auto-fill every field trip it. */
+  .hp-field { position: absolute; left: -9999px; top: -9999px; }
+</style>
+</head>
+<body>
+
+<h1>Test Contact Form</h1>
+
+<form id="contact-form" novalidate>
+
+  <label for="name">Name</label>
+  <input type="text" id="name" name="name" maxlength="100" required autocomplete="name">
+
+  <label for="email">Email</label>
+  <input type="email" id="email" name="email" maxlength="254" required autocomplete="email">
+
+  <label for="message">Message</label>
+  <textarea id="message" name="message" maxlength="5000" required></textarea>
+
+  <!-- Honeypot: real users never see or fill this. If it's filled, we treat the
+       submission as a bot and drop it server-side. -->
+  <div class="hp-field" aria-hidden="true">
+    <label for="website">Leave this field blank</label>
+    <input type="text" id="website" name="website" tabindex="-1" autocomplete="off">
+  </div>
+
+  <div id="turnstile-widget" style="margin-top: 16px;"></div>
+
+  <button type="submit" id="submit-btn">Send</button>
+
+  <div id="form-status" role="status"></div>
+
+</form>
+
+<script>
+  // ---- Configure these two values for your setup ----
+  const WORKER_URL = "https://YOUR-WORKER-SUBDOMAIN.workers.dev"; // your deployed Worker URL
+  const TURNSTILE_SITE_KEY = "YOUR_TURNSTILE_SITE_KEY"; // from the Cloudflare Turnstile dashboard
+  // -----------------------------------------------------
+
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/; // same rule the Worker enforces
+
+  let turnstileWidgetId;
+  let turnstileError = "";
+
+  window.onloadTurnstileCallback = function () {
+    turnstileWidgetId = turnstile.render("#turnstile-widget", {
+      sitekey: TURNSTILE_SITE_KEY,
+      "error-callback": function (code) {
+        // This fires if the sitekey is wrong/placeholder, or this hostname
+        // isn't allowed for the widget yet — see README troubleshooting.
+        turnstileError = "Verification widget error (code " + code + "). Check TURNSTILE_SITE_KEY and that this domain is allowed for the widget.";
+        statusEl.textContent = turnstileError;
+        statusEl.className = "error";
+      },
+      "expired-callback": function () {
+        statusEl.textContent = "Verification expired — please complete it again.";
+        statusEl.className = "error";
+      },
+    });
+  };
+
+  const form = document.getElementById("contact-form");
+  const statusEl = document.getElementById("form-status");
+  const submitBtn = document.getElementById("submit-btn");
+
+  form.addEventListener("submit", async function (e) {
+    e.preventDefault();
+    statusEl.textContent = "";
+    statusEl.className = "";
+
+    const emailValue = document.getElementById("email").value.trim();
+    if (!EMAIL_RE.test(emailValue)) {
+      statusEl.textContent = "Please enter a valid email address (e.g. name@example.com).";
+      statusEl.className = "error";
+      document.getElementById("email").focus();
+      return;
+    }
+
+    if (turnstileError) {
+      // Widget never initialized correctly — no point asking for a token.
+      statusEl.textContent = turnstileError;
+      statusEl.className = "error";
+      return;
+    }
+
+    const token = typeof turnstile !== "undefined" ? turnstile.getResponse(turnstileWidgetId) : "";
+    if (!token) {
+      statusEl.textContent = "Please complete the verification challenge.";
+      statusEl.className = "error";
+      return;
+    }
+
+    const payload = {
+      name: document.getElementById("name").value,
+      email: document.getElementById("email").value,
+      message: document.getElementById("message").value,
+      website: document.getElementById("website").value, // honeypot — should stay empty
+      turnstileToken: token,
+    };
+
+    submitBtn.disabled = true;
+    statusEl.textContent = "Sending...";
+    statusEl.className = "";
+
+    try {
+      const res = await fetch(WORKER_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data.ok) {
+        statusEl.textContent = "Thanks — your message was sent.";
+        statusEl.className = "success";
+        form.reset();
+      } else {
+        statusEl.textContent = data.error || "Something went wrong. Please try again.";
+        statusEl.className = "error";
+      }
+    } catch (err) {
+      statusEl.textContent = "Network error. Please try again.";
+      statusEl.className = "error";
+    } finally {
+      submitBtn.disabled = false;
+      if (typeof turnstile !== "undefined") turnstile.reset(turnstileWidgetId);
+    }
+  });
+</script>
+
+</body>
+</html>
